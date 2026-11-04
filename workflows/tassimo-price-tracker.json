@@ -1,0 +1,164 @@
+{
+  "name": "Tassimo Price Tracker",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "b98fb228-ea4b-43f0-a76f-1089eea717bf",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Product fields:\r\n// - name: Product name shown in email alerts.\r\n// - retailer: Shop name shown in email alerts.\r\n// - url: Product page to fetch.\r\n// - targetPrice: Alert threshold in GBP for the whole pack.\r\n// - drinksPerPack: Number of prepared drinks in the pack. Milk drinks usually\r\n//   use two pods per drink, so calculate this as pods ÷ 2.\r\n// - priceRegex (optional): Regex string whose first capture group is the price.\r\nconst products = [\r\n  {\r\n    name: 'Costa Latte (16 pods)',\r\n    retailer: 'Amazon UK',\r\n    url: 'https://www.amazon.co.uk/dp/B00A73JFU4',\r\n    targetPrice: 4.50,\r\n    drinksPerPack: 8,\r\n  },\r\n  {\r\n    name: 'Kenco Americano Smooth (16 pods)',\r\n    retailer: 'Amazon UK',\r\n    url: 'https://www.amazon.co.uk/dp/B003BZT45I',\r\n    targetPrice: 4.00,\r\n    drinksPerPack: 16,\r\n  },\r\n  {\r\n    name: \"L'OR Espresso Classique (16 pods)\",\r\n    retailer: 'Amazon UK',\r\n    url: 'https://www.amazon.co.uk/dp/B01NH9IRI7',\r\n    targetPrice: 4.25,\r\n    drinksPerPack: 16,\r\n  },\r\n];\r\n\r\nreturn products.map(p => ({ json: p }));\r\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "d9573b36-84e8-4690-98ac-46598001a02b",
+      "name": "Product List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-GB,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 3000
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "html"
+            }
+          }
+        }
+      },
+      "id": "1c586eca-fba0-4bfc-a0a5-75a09be68d0f",
+      "name": "Fetch Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = $getWorkflowStaticData('global');\r\nstate.products = state.products || {};\r\n\r\nfunction toNumber(value) {\r\n  if (typeof value !== 'string' && typeof value !== 'number') return null;\r\n\r\n  let normalized = String(value).trim()\r\n    .replace(/^£\\s*/, '')\r\n    .replace(/\\s*GBP$/i, '')\r\n    .replace(/\\s+/g, '');\r\n  if (!/^\\d[\\d,.]*$/.test(normalized)) return null;\r\n\r\n  const comma = normalized.lastIndexOf(',');\r\n  const dot = normalized.lastIndexOf('.');\r\n\r\n  if (comma !== -1 && dot !== -1) {\r\n    if (comma > dot) {\r\n      if (!/^\\d{1,3}(?:\\.\\d{3})+,\\d+$/.test(normalized)) return null;\r\n      normalized = normalized.replace(/\\./g, '').replace(',', '.');\r\n    } else {\r\n      if (!/^\\d{1,3}(?:,\\d{3})+\\.\\d+$/.test(normalized)) return null;\r\n      normalized = normalized.replace(/,/g, '');\r\n    }\r\n  } else if (comma !== -1) {\r\n    const commas = (normalized.match(/,/g) || []).length;\r\n    const digitsAfterComma = normalized.length - comma - 1;\r\n    if (commas > 1) {\r\n      if (!/^\\d{1,3}(?:,\\d{3})+$/.test(normalized)) return null;\r\n      normalized = normalized.replace(/,/g, '');\r\n    } else if (digitsAfterComma > 0 && digitsAfterComma <= 2) {\r\n      normalized = normalized.replace(',', '.');\r\n    } else if (digitsAfterComma === 3 && /^\\d{1,3},\\d{3}$/.test(normalized)) {\r\n      normalized = normalized.replace(',', '');\r\n    } else {\r\n      return null;\r\n    }\r\n  } else if ((normalized.match(/\\./g) || []).length > 1) {\r\n    if (!/^\\d{1,3}(?:\\.\\d{3})+$/.test(normalized)) return null;\r\n    normalized = normalized.replace(/\\./g, '');\r\n  }\r\n\r\n  if (!/^\\d+(?:\\.\\d+)?$/.test(normalized)) return null;\r\n  const number = Number(normalized);\r\n  return Number.isFinite(number) && number > 0 ? number : null;\r\n}\r\n\r\nfunction priceFromJsonLd(value) {\r\n  if (Array.isArray(value)) {\r\n    for (const entry of value) {\r\n      const price = priceFromJsonLd(entry);\r\n      if (price !== null) return price;\r\n    }\r\n    return null;\r\n  }\r\n\r\n  if (!value || typeof value !== 'object') return null;\r\n\r\n  if (value.priceSpecification && typeof value.priceSpecification === 'object') {\r\n    const specificationPrice = toNumber(value.priceSpecification.price);\r\n    if (specificationPrice !== null) return specificationPrice;\r\n  }\r\n\r\n  const offers = value.offers;\r\n  if (offers) {\r\n    const offerPrice = priceFromJsonLd(offers);\r\n    if (offerPrice !== null) return offerPrice;\r\n  }\r\n\r\n  for (const key of ['price', 'lowPrice']) {\r\n    const price = toNumber(value[key]);\r\n    if (price !== null) return price;\r\n  }\r\n\r\n  for (const [key, child] of Object.entries(value)) {\r\n    if (key === 'offers' || key === 'priceSpecification') continue;\r\n    const price = priceFromJsonLd(child);\r\n    if (price !== null) return price;\r\n  }\r\n\r\n  return null;\r\n}\r\n\r\nfunction getAttribute(tag, attributeName) {\r\n  const escapedName = attributeName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\r\n  const match = tag.match(new RegExp(`\\\\b${escapedName}\\\\s*=\\\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\\\s>]+))`, 'i'));\r\n  return match ? (match[1] ?? match[2] ?? match[3] ?? '') : null;\r\n}\r\n\r\nfunction extractPrice(html, customRegex) {\r\n  if (typeof html !== 'string') return null;\r\n\r\n  if (customRegex) {\r\n    try {\r\n      const match = html.match(new RegExp(customRegex, 'i'));\r\n      const customPrice = match && match[1] ? toNumber(match[1]) : null;\r\n      if (customPrice !== null) return customPrice;\r\n    } catch (error) {\r\n      console.log(`Invalid priceRegex: ${error.message}`);\r\n    }\r\n  }\r\n\r\n  const scriptPattern = /<script\\b([^>]*)>([\\s\\S]*?)<\\/script\\s*>/gi;\r\n  let scriptMatch;\r\n  while ((scriptMatch = scriptPattern.exec(html)) !== null) {\r\n    const type = getAttribute(scriptMatch[1], 'type');\r\n    if (!type || type.toLowerCase() !== 'application/ld+json') continue;\r\n    try {\r\n      const parsed = JSON.parse(scriptMatch[2]);\r\n      const jsonLdPrice = priceFromJsonLd(parsed);\r\n      if (jsonLdPrice !== null) return jsonLdPrice;\r\n    } catch (error) {\r\n      console.log(`Could not parse JSON-LD price data: ${error.message}`);\r\n    }\r\n  }\r\n\r\n  const metaPattern = /<meta\\b[^>]*>/gi;\r\n  let metaMatch;\r\n  while ((metaMatch = metaPattern.exec(html)) !== null) {\r\n    const tag = metaMatch[0];\r\n    const itemprop = getAttribute(tag, 'itemprop');\r\n    const property = getAttribute(tag, 'property');\r\n    const isPriceMeta = (itemprop && itemprop.toLowerCase() === 'price')\r\n      || (property && ['product:price:amount', 'og:price:amount'].includes(property.toLowerCase()));\r\n    if (!isPriceMeta) continue;\r\n\r\n    const metaPrice = toNumber(getAttribute(tag, 'content'));\r\n    if (metaPrice !== null) return metaPrice;\r\n  }\r\n\r\n  return null;\r\n}\r\n\r\nfunction escapeHtml(value) {\r\n  return String(value)\r\n    .replace(/&/g, '&amp;')\r\n    .replace(/</g, '&lt;')\r\n    .replace(/>/g, '&gt;');\r\n}\r\n\r\nfunction escapeHtmlAttribute(value) {\r\n  return escapeHtml(value).replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\r\n}\r\n\r\nconst alerts = [];\r\n\r\nfor (let i = 0; i < items.length; i++) {\r\n  const product = $('Product List').itemMatching(i).json;\r\n  const html = items[i] && items[i].json ? items[i].json.html : null;\r\n  const price = extractPrice(html, product.priceRegex);\r\n\r\n  if (price === null) {\r\n    console.log(`Warning: no valid price found for ${product.name} (${product.url}); skipping product.`);\r\n    continue;\r\n  }\r\n\r\n  const productState = state.products[product.url] || {\r\n    lowest: null,\r\n    last: null,\r\n    lastAlerted: null,\r\n    checkedAt: null,\r\n  };\r\n  const lowestBefore = toNumber(productState.lowest);\r\n  const lastBefore = toNumber(productState.last);\r\n  const lastAlerted = toNumber(productState.lastAlerted);\r\n  const belowTarget = price <= product.targetPrice;\r\n  const newLow = lowestBefore !== null && price < lowestBefore;\r\n  const dropped = lastBefore !== null && price < lastBefore;\r\n\r\n  if (lastAlerted !== null && price > lastAlerted) {\r\n    productState.lastAlerted = null;\r\n  }\r\n  const alreadyAlerted = productState.lastAlerted !== null\r\n    && productState.lastAlerted !== undefined\r\n    && price >= productState.lastAlerted;\r\n\r\n  if ((belowTarget || newLow) && !alreadyAlerted) {\r\n    const messageLines = [\r\n      `☕ <b>${escapeHtml(product.name)}</b> / 🏪 ${escapeHtml(product.retailer)}`,\r\n      '',\r\n      `💰 Now: <b>£${price.toFixed(2)}</b>${dropped ? ` (was £${lastBefore.toFixed(2)})` : ''}`,\r\n      `🥤 Per drink: £${(price / product.drinksPerPack).toFixed(2)}`,\r\n      `🎯 Your target: £${Number(product.targetPrice).toFixed(2)}`,\r\n      lowestBefore !== null ? `📉 Lowest seen before: £${lowestBefore.toFixed(2)}` : null,\r\n      newLow ? '🔥 <b>New lowest price!</b>' : null,\r\n      '',\r\n      `<a href=\"${escapeHtmlAttribute(product.url)}\">👉 Buy now</a>`,\r\n    ].filter(line => line !== null);\r\n\r\n    alerts.push({\r\n      json: {\r\n        message: messageLines.join('\\n'),\r\n        product,\r\n        price,\r\n      },\r\n    });\r\n    productState.lastAlerted = price;\r\n  }\r\n\r\n  productState.last = price;\r\n  productState.lowest = lowestBefore === null ? price : Math.min(lowestBefore, price);\r\n  productState.checkedAt = new Date().toISOString();\r\n  state.products[product.url] = productState;\r\n}\r\n\r\nreturn alerts;\r\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "2a2a2832-eaf8-4e98-9408-56a8790138da",
+      "name": "Parse & Compare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $env.GMAIL_TO }}",
+        "subject": "={{ 'Tassimo price alert: ' + $json.product.name }}",
+        "emailType": "html",
+        "message": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "a9e3ce5d-c9c8-4a56-a395-9160e19f1336",
+      "name": "Gmail Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1120,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Product List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Product List": {
+      "main": [
+        [
+          {
+            "node": "Fetch Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page": {
+      "main": [
+        [
+          {
+            "node": "Parse & Compare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Compare": {
+      "main": [
+        [
+          {
+            "node": "Gmail Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b48f6b6f-0c55-43c5-ab23-998d2f29c731"
+}
